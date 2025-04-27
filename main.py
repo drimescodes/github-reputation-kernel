@@ -1,13 +1,10 @@
-from fastapi import FastAPI, HTTPException, Path, Query, Depends
-from fastapi.security import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, validator
 from typing import List, Dict, Optional, Any
 import httpx
-import json
 import os
-from datetime import datetime, timedelta
-import math
+from datetime import datetime
 import re
 
 # Initialize FastAPI
@@ -61,13 +58,13 @@ class GitHubRequest(BaseModel):
     github_username: str = Field(..., description="GitHub username to analyze")
     wallet_address: str = Field(..., description="Ethereum wallet address for verification")
     
-    @field_validator('github_username')
+    @validator('github_username')
     def validate_github_username(cls, v):
         if not re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9]*$', v):
             raise ValueError('Invalid GitHub username format')
         return v
     
-    @field_validator('wallet_address')
+    @validator('wallet_address')
     def validate_wallet_address(cls, v):
         if not re.match(r'^0x[a-fA-F0-9]{40}$', v):
             raise ValueError('Invalid Ethereum wallet address format')
@@ -237,39 +234,30 @@ async def calculate_reputation(metrics):
         badge_attributes=badge_attributes
     )
 
-# API Endpoints
-
-@app.get("/reputation/{github_username}", response_model=GitHubReputationResponse)
-async def get_github_reputation(
-    github_username: str = Path(..., description="GitHub username to analyze"),
-    wallet_address: str = Query(..., description="Ethereum wallet address for verification"),
+# One consolidated POST endpoint for KRNL
+@app.post("/reputation", response_model=GitHubReputationResponse)
+async def analyze_github_reputation(
+    request: GitHubRequest,
     client: httpx.AsyncClient = Depends(github_client)
 ):
     """
-    Get the GitHub reputation score and badge eligibility for a user.
-    This endpoint analyzes GitHub contribution history and provides metrics for NFT badges.
+    Analyze GitHub contribution history and provide metrics for NFT badges.
+    This endpoint serves as the off-chain kernel for the KRNL protocol.
     """
-    # Validate the input
-    if not re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9]*$', github_username):
-        raise HTTPException(status_code=400, detail="Invalid GitHub username format")
-    
-    if not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
-        raise HTTPException(status_code=400, detail="Invalid Ethereum wallet address format")
-    
     try:
         # Get user profile
-        profile = await get_user_profile(client, github_username)
+        profile = await get_user_profile(client, request.github_username)
         
         # Get repositories
-        repos = await get_user_repos(client, github_username)
+        repos = await get_user_repos(client, request.github_username)
         
         # Get commits, PRs, and issues
-        commits = await get_user_commits(client, github_username)
-        prs = await get_user_prs(client, github_username)
-        issues = await get_user_issues(client, github_username)
+        commits = await get_user_commits(client, request.github_username)
+        prs = await get_user_prs(client, request.github_username)
+        issues = await get_user_issues(client, request.github_username)
         
         # Get contribution stats
-        contribution_stats = await get_contribution_stats(client, github_username)
+        contribution_stats = await get_contribution_stats(client, request.github_username)
         
         # Calculate account age
         created_at = datetime.strptime(profile.get("created_at"), "%Y-%m-%dT%H:%M:%SZ")
@@ -300,7 +288,7 @@ async def get_github_reputation(
         
         # Prepare response
         response = GitHubReputationResponse(
-            github_username=github_username,
+            github_username=request.github_username,
             metrics=metrics,
             reputation=reputation,
             last_updated=datetime.now().isoformat(),
@@ -313,21 +301,6 @@ async def get_github_reputation(
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Error analyzing GitHub data: {str(e)}")
-
-@app.post("/reputation", response_model=GitHubReputationResponse)
-async def post_github_reputation(
-    request: GitHubRequest,
-    client: httpx.AsyncClient = Depends(github_client)
-):
-    """
-    Post-based endpoint for GitHub reputation analysis.
-    Functionally identical to the GET endpoint but accepts POST request with JSON body.
-    """
-    return await get_github_reputation(
-        github_username=request.github_username,
-        wallet_address=request.wallet_address,
-        client=client
-    )
 
 if __name__ == "__main__":
     import uvicorn
